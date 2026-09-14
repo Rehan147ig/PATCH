@@ -100,10 +100,10 @@ describe('golden e2e migration pipeline (scan -> plan -> dry-run -> verify)', ()
     const { digest } = await computeCandidateDigest(plan.changedFiles, reports);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
 
-    // ---- Step 4 (Verify output) ----
+    // ---- Step 4 (Verify output: §8 eight explicit dimensions) ----
     const run = await verifyCandidate(dir, plan.changedFiles, reports, { timeoutMs: 60000 });
     expect(run.candidateDigest).toMatch(/^[0-9a-f]{64}$/);
-    expect(run.dimensions).toHaveLength(3);
+    expect(run.dimensions).toHaveLength(8);
     for (const d of run.dimensions) {
       expect(typeof d.exitCode === 'number' || d.exitCode === undefined).toBe(true);
       expect(d.reason.length).toBeGreaterThan(0);

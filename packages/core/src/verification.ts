@@ -13,11 +13,30 @@ import type {
 } from "./types.js";
 
 /** Codemod + validation recipe version. Bumped whenever edit or check semantics change. */
-export const RECIPE_VERSION = "core-fR07-fR08-v1";
+export const RECIPE_VERSION = "core-fR07-fR08-v2";
 export const DEFAULT_PROFILE: ValidationProfile = {
   id: "default-v1",
   required: ["dependency-resolution", "types-build", "unit-tests"],
 };
+
+/** Full §7 candidate identity (PRD formula). Optional tenant/event fields are
+ * additive: absent values bind as null so legacy callers keep stable digests
+ * within the same recipe version family. */
+export interface CandidateBindingOpts {
+  recipeVersion?: string;
+  profileId?: string;
+  /** Digest of the validation profile body (profile id alone is not enough). */
+  validationProfileDigest?: string | null;
+  baseSha?: string | null;
+  lockfileDigest?: string | null;
+  orgId?: string | null;
+  repoId?: string | null;
+  sourceEventDigest?: string | null;
+}
+
+export function validationProfileDigest(profile: ValidationProfile): string {
+  return shortHash(JSON.stringify({ id: profile.id, required: [...profile.required].sort() }));
+}
 
 function sha256Hex(s: string | Buffer): string {
   return createHash("sha256").update(s).digest("hex");
@@ -36,12 +55,7 @@ function shortHash(s: string | Buffer): string {
 export async function computeCandidateDigest(
   changedFiles: Map<string, string>,
   reports: ScanReport[],
-  opts: {
-    recipeVersion?: string;
-    profileId?: string;
-    baseSha?: string | null;
-    lockfileDigest?: string | null;
-  } = {}
+  opts: CandidateBindingOpts = {}
 ): Promise<{ digest: string; fileDigests: Record<string, string> }> {
   const fileDigests: Record<string, string> = {};
   const sorted = [...changedFiles.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
@@ -55,8 +69,12 @@ export async function computeCandidateDigest(
   const payload = JSON.stringify({
     recipe: opts.recipeVersion ?? RECIPE_VERSION,
     profile: opts.profileId ?? DEFAULT_PROFILE.id,
+    profileDigest: opts.validationProfileDigest ?? null,
     base: opts.baseSha ?? null,
     lockfile: opts.lockfileDigest ?? null,
+    org: opts.orgId ?? null,
+    repo: opts.repoId ?? null,
+    sourceEvent: opts.sourceEventDigest ?? null,
     files: sorted.map(([rel, content]) => [rel, sha256Hex(content)]),
     sources: sha256Hex(sourceIds),
   });
@@ -175,19 +193,26 @@ function hasTsFiles(changedFiles: Map<string, string>): boolean {
 }
 
 /**
- * FR-08: verify actual candidate behavior with separate dimensions.
- * - dependency-resolution, types-build, unit-tests each report
- *   PASS/FAIL/NOT_RUN/NOT_APPLICABLE/INCONCLUSIVE with reasons.
+ * FR-08: verify actual candidate behavior with separate dimensions (§8).
+ * All eight dimensions report PASS/FAIL/NOT_RUN/NOT_APPLICABLE/INCONCLUSIVE
+ * with reasons — no single green hides missing dimensions:
+ * syntax, dependency-resolution, types-build, unit-tests, integration-tests,
+ * contract-sandbox, domain-behavior, customer-acceptance.
  * - VERIFIED only when every required dimension PASSes. Install-only success,
  *   missing tests, skipped checks, unavailable compilers, or empty lists are
- *   INCOMPLETE or FAILED � never VERIFIED.
+ *   INCOMPLETE or FAILED — never VERIFIED.
  * - All validators are awaited; a pending Promise is never treated as truthy.
  */
 export async function verifyCandidate(
   rootDir: string,
   changedFiles: Map<string, string>,
   reports: ScanReport[] = [],
-  opts: { profile?: ValidationProfile; timeoutMs?: number } = {}
+  opts: {
+    profile?: ValidationProfile;
+    timeoutMs?: number;
+    /** Caller-supplied statuses for sandbox/domain/acceptance dimensions. */
+    extraStatuses?: Partial<Record<ValidationDimensionName, { status: ValidationDimension['status']; reason: string }>>;
+  } = {}
 ): Promise<ValidationRun> {
   const profile = opts.profile ?? DEFAULT_PROFILE;
   const timeoutMs = opts.timeoutMs ?? 120000;
@@ -198,6 +223,7 @@ export async function verifyCandidate(
   const lockfileDigest = await getLockfileDigest(rootDir);
   const { digest, fileDigests } = await computeCandidateDigest(changedFiles, reports, {
     profileId: profile.id,
+    validationProfileDigest: validationProfileDigest(profile),
     baseSha,
     lockfileDigest,
   });
@@ -374,6 +400,23 @@ export async function verifyCandidate(
     }
   }
 
+  // 4-8. Extended §8 dimensions: syntax, integration-tests,
+  // contract-sandbox, domain-behavior, customer-acceptance. Each is explicit —
+  // never hidden behind a single green. Defaults are NOT_APPLICABLE (not part
+  // of the default profile); required-but-unprovided becomes NOT_RUN so the
+  // verdict is INCOMPLETE, never VERIFIED.
+  for (const name of ['syntax', 'integration-tests', 'contract-sandbox', 'domain-behavior', 'customer-acceptance'] as const) {
+    const t0 = Date.now();
+    const provided = opts.extraStatuses?.[name];
+    if (provided) {
+      dimensions.push({ name, status: provided.status, reason: provided.reason, durationMs: Date.now() - t0 });
+    } else if ((profile.required as string[]).includes(name)) {
+      dimensions.push({ name, status: 'NOT_RUN', reason: `${name} is required by profile ${profile.id} but was not executed`, durationMs: Date.now() - t0 });
+    } else {
+      dimensions.push({ name, status: 'NOT_APPLICABLE', reason: `${name} not in profile ${profile.id}`, durationMs: Date.now() - t0 });
+    }
+  }
+
   const byName = new Map<ValidationDimensionName, ValidationDimension>(dimensions.map((d) => [d.name, d]));
   let verdict: ValidationVerdict = "VERIFIED";
   for (const name of profile.required) {
@@ -424,4 +467,59 @@ function parseTestCounts(output: string): { passed?: number; failed?: number; to
     failed: mFail ? Number(mFail[1]) : 0,
     total: mTests ? Number(mTests[1]) + (mFail ? Number(mFail[1]) : 0) : undefined,
   };
+}
+
+/**
+ * §8 customer-CI bootstrap gate. Accept CI evidence only for the current
+ * candidate head SHA, expected workflow/check identities, trusted
+ * installation/runner, and the complete required check set. One successful
+ * check never stands for the full matrix; out-of-order or older-head results
+ * are history, never promotion.
+ */
+export interface CiCheck {
+  workflow: string;
+  check: string;
+  headSha: string;
+  status: 'success' | 'failure' | 'pending';
+}
+
+export interface CiEvidenceDecision {
+  ok: boolean;
+  reason: string;
+}
+
+export function acceptCiEvidence(opts: {
+  candidateHeadSha: string;
+  baseSha: string | null;
+  checks: CiCheck[];
+  expectedWorkflows: string[];
+  requiredChecks: string[];
+  trustedRunners: Set<string>;
+  runnerId: string;
+}): CiEvidenceDecision {
+  if (!opts.trustedRunners.has(opts.runnerId)) {
+    return { ok: false, reason: `untrusted runner ${opts.runnerId}` };
+  }
+  if (opts.checks.length === 0) {
+    return { ok: false, reason: 'empty CI check list never promotes' };
+  }
+  for (const c of opts.checks) {
+    if (c.headSha !== opts.candidateHeadSha) {
+      return { ok: false, reason: `stale head ${c.headSha.slice(0, 8)} ≠ candidate ${opts.candidateHeadSha.slice(0, 8)}: retained as history only` };
+    }
+    if (!opts.expectedWorkflows.includes(c.workflow)) {
+      return { ok: false, reason: `unexpected workflow identity ${c.workflow}` };
+    }
+    if (c.status === 'pending') {
+      return { ok: false, reason: `required check ${c.check} still pending` };
+    }
+    if (c.status !== 'success') {
+      return { ok: false, reason: `required check ${c.check} did not succeed` };
+    }
+  }
+  const seen = new Set(opts.checks.map((c) => c.check));
+  for (const req of opts.requiredChecks) {
+    if (!seen.has(req)) return { ok: false, reason: `incomplete matrix: missing ${req}` };
+  }
+  return { ok: true, reason: 'current head, expected workflows, trusted runner, complete matrix' };
 }

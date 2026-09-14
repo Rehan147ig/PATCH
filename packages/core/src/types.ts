@@ -161,9 +161,14 @@ export interface TelemetryRule {
 export type ValidationStatus = 'PASS' | 'FAIL' | 'NOT_RUN' | 'NOT_APPLICABLE' | 'INCONCLUSIVE';
 
 export type ValidationDimensionName =
+  | 'syntax'
   | 'dependency-resolution'
   | 'types-build'
-  | 'unit-tests';
+  | 'unit-tests'
+  | 'integration-tests'
+  | 'contract-sandbox'
+  | 'domain-behavior'
+  | 'customer-acceptance';
 
 export interface ValidationDimension {
   name: ValidationDimensionName;
