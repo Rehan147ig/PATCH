@@ -8,7 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build:core": "npm run --workspace=@apimigrate/core build",
+    "build:packages": "npm run --workspaces --if-present build",
+    "build": "npm run build:core && npm run build:packages",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   }

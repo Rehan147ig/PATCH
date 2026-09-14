@@ -1,17 +1,24 @@
-name: ci
+name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
+    branches: [main, master]
 jobs:
-  build-and-test:
+  verify:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build -w @apimigrate/core -w @apimigrate/cli -w @apimigrate/action -w @apimigrate/ingester
-      - run: npm run test -w @apimigrate/core -w @apimigrate/cli -w @apimigrate/action -w @apimigrate/ingester -w @apimigrate/server
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build packages in order
+        run: npm run build
+      - name: Run test suites
+        run: npm test
