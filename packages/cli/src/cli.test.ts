@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { scanDirectory, planCodemods } from '@apimigrate/core';
 
 describe('cli integration', () => {
@@ -88,23 +89,12 @@ await stripe.charges.create({ amount: 1000 });
         ],
       }),
     );
-    const cli = path.resolve(import.meta.dirname ?? '.', '../../cli/dist/cli.js');
-    const candidates = [
-      path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'dist', 'cli.js'),
-      'D:\\apimigrate\\packages\\cli\\dist\\cli.js',
-    ];
-    const cliPath = candidates.find((c) => {
-      try {
-        return existsSync(c);
-      } catch {
-        return false;
-      }
-    });
-    expect(cliPath, 'built CLI dist exists').toBeTruthy();
+    const cliPath = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+    expect(existsSync(cliPath), 'built CLI dist exists').toBe(true);
     const result = await new Promise<{ code: number; out: string; err: string }>((resolve) => {
       execFile(
         process.execPath,
-        [cliPath!, 'apply', dir, '--manifests', mdir, '--dry-run', '--write'],
+        [cliPath, 'apply', dir, '--manifests', mdir, '--dry-run', '--write'],
         { timeout: 30000 },
         (err, stdout, stderr) => {
           resolve({
@@ -120,7 +110,5 @@ await stripe.charges.create({ amount: 1000 });
     // No writes: source untouched, no evidence dir.
     expect(readFileSync(path.join(dir, 'a.ts'), 'utf8')).toBe(before);
     expect(existsSync(path.join(dir, '.apimigrate'))).toBe(false);
-    void cli;
-    void mkdirSync;
   }, 60000);
 });
