@@ -10,6 +10,11 @@ import {
   writeCodemods,
   verifyCandidate,
   computeCandidateDigest,
+  branchNameForDigest,
+  resolveFreeBranch,
+  checkFreshness,
+  getBaseSha,
+  getLockfileDigest,
   type MigrationManifest,
   type ScanReport,
 } from '@apimigrate/core';
@@ -50,7 +55,7 @@ program
   .option('-m, --manifests <dir>', 'directory of manifest JSON files', 'manifests')
   .option('-p, --pr', 'open a PR with the changes (requires GitHub auth)')
   .option('--base <branch>', 'base branch for the PR', 'main')
-  .option('--branch <name>', 'branch name for the PR', 'apimigrate/auto-migration')
+  .option('--branch <name>', 'branch name for the PR (default: candidate-specific apimigrate/<digest>)')
   .option('--dry-run', 'plan changes without writing or pushing')
   .option('--write', 'write changes to disk (default behavior; conflicts with --dry-run)')
   .option('--allow-incomplete', 'open a PR even when verification is INCOMPLETE (explicit unverified draft)')
@@ -110,7 +115,13 @@ program
     }
 
     if (opts.pr) {
-      await openPr(root, opts.base!, opts.branch!, reports, run.candidateDigest);
+      // FR-10: candidate-specific branch unless the user named one explicitly.
+      // The legacy shared default is retired to prevent cross-candidate collisions.
+      const branch =
+        opts.branch && opts.branch !== 'apimigrate/auto-migration'
+          ? opts.branch
+          : branchNameForDigest(run.candidateDigest);
+      await openPr(root, opts.base ?? 'main', branch, reports, run, plan.changedFiles);
     }
   });
 
@@ -126,21 +137,65 @@ async function persistValidation(root: string, run: { candidateDigest: string })
   }
 }
 
-async function openPr(root: string, base: string, branch: string, reports: ScanReport[], candidateDigest?: string) {
+async function openPr(
+  root: string,
+  base: string,
+  branch: string,
+  reports: ScanReport[],
+  run: { candidateDigest: string; baseSha: string | null; profileId: string },
+  changedFiles: Map<string, string>,
+) {
   // Delegate to GitHub CLI (gh) which handles auth. In production, the
   // GitHub App backend does this via the API.
-  const { execSync } = await import('node:child_process');
+  const { execSync, execFileSync } = await import('node:child_process');
   try {
-    execSync(`git switch -c ${branch}`, { cwd: root, stdio: 'pipe' });
+    // FR-10 stale-state handling: the base, lockfile, or candidate may have
+    // moved between validation and delivery. Recompute with the same binding
+    // inputs and block instead of delivering stale validation as current.
+    const nowBase = await getBaseSha(root);
+    const nowLock = await getLockfileDigest(root);
+    const { digest: nowDigest } = await computeCandidateDigest(changedFiles, reports, {
+      profileId: run.profileId,
+      baseSha: nowBase,
+      lockfileDigest: nowLock,
+    });
+    const fresh = checkFreshness(
+      { candidateDigest: run.candidateDigest, baseSha: run.baseSha },
+      { digest: nowDigest, baseSha: nowBase },
+    );
+    if (!fresh.fresh) {
+      console.error(
+        `Stale candidate (${fresh.reason}); validation no longer applies. Re-run apply to revalidate.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    // Never overwrite an existing branch (user edits or prior run): resolve
+    // a free name instead. Local existence check via git; no force operations.
+    const exists = (b: string): boolean => {
+      try {
+        execFileSync('git', ['rev-parse', '--verify', `refs/heads/${b}`], { cwd: root, stdio: 'pipe' });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let head = branch;
+    if (exists(head)) {
+      const free = await resolveFreeBranch(head, async (b) => exists(b));
+      console.log(`Branch ${head} exists; using ${free.branch} instead (existing ref untouched)`);
+      head = free.branch;
+    }
+    execSync(`git switch -c ${head}`, { cwd: root, stdio: 'pipe' });
     execSync(`git add -A`, { cwd: root, stdio: 'pipe' });
     execSync(`git commit -m "chore(apimigrate): apply API migration"`, { cwd: root, stdio: 'pipe' });
-    execSync(`git push -u origin ${branch}`, { cwd: root, stdio: 'pipe' });
-    const body = buildPrBody(reports, candidateDigest);
-    execSync(`gh pr create --base ${base} --head ${branch} --title "chore(apimigrate): apply API migration" --body "${body.replace(/"/g, '\\"')}"`, {
+    execSync(`git push -u origin ${head}`, { cwd: root, stdio: 'pipe' });
+    const body = buildPrBody(reports, run.candidateDigest);
+    execSync(`gh pr create --base ${base} --head ${head} --title "chore(apimigrate): apply API migration" --body "${body.replace(/"/g, '\\"')}"`, {
       cwd: root,
       stdio: 'pipe',
     });
-    console.log(`PR opened: ${branch} -> ${base}`);
+    console.log(`PR opened: ${head} -> ${base}`);
   } catch (err) {
     console.error('Failed to open PR:', (err as Error).message);
     process.exitCode = 1;

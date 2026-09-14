@@ -8,6 +8,10 @@ import {
   scanDirectory,
   planCodemods,
   summarize,
+  verifyCandidate,
+  computeCandidateDigest,
+  branchNameForDigest,
+  gateDelivery,
   type ScanReport,
   type MigrationManifest,
 } from '@apimigrate/core';
@@ -238,13 +242,33 @@ async function handleScan(owner: string, repo: string, config: GitHubAppConfig, 
     return;
   }
 
-  const body = buildBody(reports);
+  // FR-08/FR-10: verify the candidate and gate automatic delivery. The
+  // server flow has no human approval, so INCOMPLETE/FAILED candidates never
+  // open a PR automatically. Freshness holds by construction here: validation
+  // ran in this process on these exact files, and createMigrationPr re-reads
+  // the live base SHA when cutting the branch. The remote base SHA fetched
+  // above is the known baseline.
+  const run = await verifyCandidate(tmp, plan.changedFiles, reports);
+  const gate = gateDelivery({
+    verdict: run.verdict,
+    fresh: true,
+    baselineKnown: sha.length > 0,
+    explicitApproval: false,
+  });
+  if (!gate.ok) {
+    console.log(`apimigrate: automatic delivery blocked (${run.verdict}): ${gate.reason}`);
+    return;
+  }
+
+  const { digest } = await computeCandidateDigest(plan.changedFiles, reports);
+  const body = `${buildBody(reports)}\n\ncandidate: \`${digest.slice(0, 12)}\``;
   await createMigrationPr(octokit, owner, repo, {
     base: 'main',
-    head: 'apimigrate/auto-migration',
+    head: branchNameForDigest(digest),
     title: 'chore(apimigrate): apply API migration',
     body,
     changedFiles: plan.changedFiles,
+    candidateDigest: digest,
   });
 }
 

@@ -15,9 +15,9 @@ inputs:
     required: false
     default: ''
   branch:
-    description: 'Branch name for the migration PR'
+    description: 'Branch name for the migration PR (default: candidate-specific apimigrate/<digest>)'
     required: false
-    default: 'apimigrate/auto-migration'
+    default: ''
   fail-on-hits:
     description: 'Fail the check if affected usages are found (useful for pre-merge gating)'
     required: false

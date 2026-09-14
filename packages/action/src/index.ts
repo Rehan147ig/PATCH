@@ -1,6 +1,13 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { scanDirectory, planCodemods, loadManifests } from '@apimigrate/core';
+import {
+  scanDirectory,
+  planCodemods,
+  loadManifests,
+  computeCandidateDigest,
+  branchNameForDigest,
+  resolveFreeBranch,
+} from '@apimigrate/core';
 import path from 'node:path';
 
 /**
@@ -15,7 +22,6 @@ export async function run(): Promise<void> {
     const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
     const manifestsDir = core.getInput('manifests') || path.join(root, 'manifests');
     const base = core.getInput('base') || github.context.payload?.repository?.default_branch || 'main';
-    const branch = core.getInput('branch') || 'apimigrate/auto-migration';
     const failOnHits = core.getBooleanInput('fail-on-hits');
 
     const manifests = await loadManifests(manifestsDir);
@@ -57,16 +63,45 @@ export async function run(): Promise<void> {
     const octokit = github.getOctokit(token);
     const { owner, repo } = github.context.repo;
 
-    // Create branch + commit via the API.
-    const ref = `heads/${branch}`;
+    // FR-10: candidate-specific branch; never overwrite an existing branch.
+    const { digest } = await computeCandidateDigest(plan.changedFiles, reports);
+    const requested = core.getInput('branch');
+    const wanted = requested || branchNameForDigest(digest);
     const baseSha = github.context.sha;
+
+    const refExists = async (branch: string): Promise<boolean> => {
+      try {
+        await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+        return true;
+      } catch (err) {
+        if ((err as { status?: number }).status === 404) return false;
+        throw err;
+      }
+    };
+
+    // Idempotent retry: reconcile an already-open PR instead of duplicating.
+    const openForBranch = await octokit.rest.pulls.list({
+      owner,
+      repo,
+      state: 'open',
+      head: `${owner}:${wanted}`,
+      base,
+    });
+    if (openForBranch.data.length > 0) {
+      core.info(`PR already open: ${openForBranch.data[0].html_url} (reconciled, no duplicate)`);
+      core.setOutput('pr-url', openForBranch.data[0].html_url);
+      return;
+    }
+
+    let head = wanted;
     try {
-      await octokit.rest.git.createRef({ owner, repo, ref: `refs/${ref}`, sha: baseSha });
+      await octokit.rest.git.createRef({ owner, repo, ref: `refs/heads/${head}`, sha: baseSha });
     } catch (err) {
-      const status = (err as { status?: number }).status;
-      if (status !== 422) throw err;
-      await octokit.rest.git.deleteRef({ owner, repo, ref });
-      await octokit.rest.git.createRef({ owner, repo, ref: `refs/${ref}`, sha: baseSha });
+      if ((err as { status?: number }).status !== 422) throw err;
+      // Branch taken (user edits or prior run): leave it alone, use a free name.
+      head = (await resolveFreeBranch(wanted, refExists)).branch;
+      core.info(`Branch ${wanted} exists; using ${head} instead (existing ref untouched)`);
+      await octokit.rest.git.createRef({ owner, repo, ref: `refs/heads/${head}`, sha: baseSha });
     }
 
     const tree = Array.from(plan.changedFiles.entries()).map(([file, content]) => ({
@@ -88,14 +123,14 @@ export async function run(): Promise<void> {
       tree: createdTree.sha,
       parents: [baseSha],
     });
-    await octokit.rest.git.updateRef({ owner, repo, ref, sha: commit.sha, force: false });
+    await octokit.rest.git.updateRef({ owner, repo, ref: `heads/${head}`, sha: commit.sha, force: false });
 
-    const body = buildBody(reports);
+    const body = `${buildBody(reports)}\n\ncandidate: \`${digest.slice(0, 12)}\``;
     const { data: pr } = await octokit.rest.pulls.create({
       owner,
       repo,
       title: 'chore(apimigrate): apply API migration',
-      head: branch,
+      head,
       base,
       body,
     });

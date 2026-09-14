@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { Octokit } from 'octokit';
 import { createAppAuth } from '@octokit/auth-app';
+import { branchNameForDigest, LEGACY_BRANCH, resolveFreeBranch } from '@apimigrate/core';
 
 export interface GitHubAppConfig {
   appId: string;
@@ -59,7 +60,40 @@ export async function createInstallationOctokit(
 }
 
 /**
- * Create a migration PR: create a branch, write files, commit, push, open PR.
+ * Find an already-open PR for a head branch (retry reconciliation).
+ * Returns the existing PR so retries never open duplicates — including the
+ * worker-die-after-PR-create case, where the retry reconciles the single
+ * already-created PR instead of opening a second one.
+ */
+export async function findExistingPr(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  head: string,
+  base: string,
+): Promise<{ url: string; number: number } | null> {
+  const { data } = await octokit.rest.pulls.list({
+    owner,
+    repo,
+    state: 'open',
+    head: `${owner}:${head}`,
+    base,
+  });
+  const pr = data[0];
+  return pr ? { url: pr.html_url, number: pr.number } : null;
+}
+
+/**
+ * Create a migration PR without ever overwriting existing work.
+ *
+ * FR-10 delivery safety:
+ * - When `candidateDigest` is provided and the caller asked for the legacy
+ *   shared branch, a candidate-specific branch is used instead.
+ * - If an open PR already exists for the branch, it is returned as-is
+ *   (`reconciled: true`) — retries do not duplicate PRs.
+ * - If the branch ref already exists (user edits, prior run), it is left
+ *   untouched; a free suffixed branch is resolved instead. PATCH never
+ *   deletes or force-moves a branch.
  */
 export async function createMigrationPr(
   octokit: Octokit,
@@ -71,32 +105,44 @@ export async function createMigrationPr(
     title: string;
     body: string;
     changedFiles: Map<string, string>;
+    candidateDigest?: string;
   },
-): Promise<{ url: string; number: number }> {
-  const { base, head, title, body, changedFiles } = opts;
-  try {
-    await octokit.rest.git.createRef({
-      owner,
-      repo,
-      ref: `refs/heads/${head}`,
-      sha: (await octokit.rest.git.getRef({ owner, repo, ref: `heads/${base}` })).data.object.sha,
-    });
-  } catch (err) {
-    // Branch may already exist; if so, delete and recreate to keep the PR clean.
-    const status = (err as { status?: number }).status;
-    if (status !== 422) throw err;
-    await octokit.rest.git.deleteRef({ owner, repo, ref: `heads/${head}` });
-    await octokit.rest.git.createRef({
-      owner,
-      repo,
-      ref: `refs/heads/${head}`,
-      sha: (await octokit.rest.git.getRef({ owner, repo, ref: `heads/${base}` })).data.object.sha,
-    });
+): Promise<{ url: string; number: number; head: string; reconciled?: boolean }> {
+  const { base, title, body, changedFiles, candidateDigest } = opts;
+  let head = opts.head;
+  if (candidateDigest && (head === LEGACY_BRANCH || head === 'apimigrate/auto-migration')) {
+    head = branchNameForDigest(candidateDigest);
   }
 
-  const baseCommit = (
-    await octokit.rest.git.getRef({ owner, repo, ref: `heads/${head}` })
-  ).data.object.sha;
+  const baseSha = (await octokit.rest.git.getRef({ owner, repo, ref: `heads/${base}` })).data.object.sha;
+
+  // Idempotent retry: an open PR for this branch is the answer already.
+  const existing = await findExistingPr(octokit, owner, repo, head, base);
+  if (existing) {
+    return { ...existing, head, reconciled: true };
+  }
+
+  const branchExists = async (branch: string): Promise<boolean> => {
+    try {
+      await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+      return true;
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return false;
+      throw err;
+    }
+  };
+
+  // Never delete or overwrite: resolve a free name when taken.
+  let resolved = head;
+  try {
+    await octokit.rest.git.createRef({ owner, repo, ref: `refs/heads/${head}`, sha: baseSha });
+  } catch (err) {
+    if ((err as { status?: number }).status !== 422) throw err;
+    const free = await resolveFreeBranch(head, branchExists);
+    resolved = free.branch;
+    await octokit.rest.git.createRef({ owner, repo, ref: `refs/heads/${resolved}`, sha: baseSha });
+  }
+
   const tree: Array<{ path: string; mode: '100644'; type: 'blob'; content: string }> = [];
   for (const [file, content] of changedFiles) {
     tree.push({ path: file, mode: '100644', type: 'blob', content });
@@ -104,7 +150,7 @@ export async function createMigrationPr(
   const { data: createdTree } = await octokit.rest.git.createTree({
     owner,
     repo,
-    base_tree: baseCommit,
+    base_tree: baseSha,
     tree,
   });
   const { data: commit } = await octokit.rest.git.createCommit({
@@ -112,23 +158,31 @@ export async function createMigrationPr(
     repo,
     message: 'chore(apimigrate): apply API migration',
     tree: createdTree.sha,
-    parents: [baseCommit],
+    parents: [baseSha],
   });
   await octokit.rest.git.updateRef({
     owner,
     repo,
-    ref: `heads/${head}`,
+    ref: `heads/${resolved}`,
     sha: commit.sha,
     force: false,
   });
 
-  const { data: pr } = await octokit.rest.pulls.create({
-    owner,
-    repo,
-    title,
-    head,
-    base,
-    body,
-  });
-  return { url: pr.html_url, number: pr.number };
+  try {
+    const { data: pr } = await octokit.rest.pulls.create({
+      owner,
+      repo,
+      title,
+      head: resolved,
+      base,
+      body,
+    });
+    return { url: pr.html_url, number: pr.number, head: resolved };
+  } catch (err) {
+    // Lost race with a concurrent creator: reconcile instead of duplicating.
+    if ((err as { status?: number }).status !== 422) throw err;
+    const raced = await findExistingPr(octokit, owner, repo, resolved, base);
+    if (raced) return { ...raced, head: resolved, reconciled: true };
+    throw err;
+  }
 }
