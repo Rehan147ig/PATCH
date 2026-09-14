@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0",
+  "id": "stripe-2024-12-api-version-pin",
+  "vendor": "stripe",
+  "title": "Stripe API version pin required — unversioned calls now rejected",
+  "severity": "breaking",
+  "lang": "typescript",
+  "changedAt": "2024-12-01",
+  "references": [
+    "https://stripe.com/docs/changelog/2024-12-01-api-version-pin"
+  ],
+  "changes": [
+    {
+      "type": "sdk-upgrade",
+      "description": "All Stripe SDK calls must now pin an explicit API version via `apiVersion`; unversioned clients will be rejected.",
+      "match": {
+        "sdk": { "package": "stripe" }
+      },
+      "fix": {
+        "kind": "replace",
+        "from": "apiVersion",
+        "to": "apiVersion: '2025-05-01'",
+        "explain": "Set the apiVersion on the Stripe client constructor."
+      }
+    }
+  ]
+}

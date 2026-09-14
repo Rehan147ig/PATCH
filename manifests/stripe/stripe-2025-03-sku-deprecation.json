@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1.0",
+  "id": "stripe-2025-03-sku-deprecation",
+  "vendor": "stripe",
+  "title": "SKU API and `sku` parameter deprecated",
+  "severity": "deprecation",
+  "lang": "typescript",
+  "changedAt": "2025-03-01",
+  "references": [
+    "https://stripe.com/docs/changelog/2025-03-01-sku-deprecation"
+  ],
+  "changes": [
+    {
+      "type": "deprecated-call",
+      "description": "The `skus` resource is deprecated; migrate to the `products` + `prices` model.",
+      "match": {
+        "call": { "name": "skus", "object": "stripe" }
+      },
+      "fix": {
+        "kind": "rename-call",
+        "from": "stripe.skus",
+        "to": "stripe.products",
+        "explain": "Replace SKU operations with product operations."
+      }
+    },
+    {
+      "type": "removed-parameter",
+      "description": "The `sku` parameter on subscription/order creation is deprecated; use `price` instead.",
+      "match": {
+        "call": { "name": "create", "object": "stripe.subscriptions" },
+        "parameter": { "name": "sku" }
+      },
+      "fix": {
+        "kind": "remove-parameter",
+        "from": "sku",
+        "explain": "Replace `sku` with `price` pointing to the equivalent Price object."
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "1.0",
+  "id": "twilio-v4-sdk-migration",
+  "vendor": "twilio",
+  "title": "Twilio SDK v4 migration: SMS API restructure and Programmable Fax deprecation",
+  "severity": "deprecation",
+  "lang": "typescript",
+  "changedAt": "2025-04-01",
+  "references": [
+    "https://www.twilio.com/docs/changelog"
+  ],
+  "changes": [
+    {
+      "type": "deprecated-call",
+      "description": "`twilio.messages` usage is being consolidated; the Programmable SMS API surface is deprecated in favor of the unified Messages API.",
+      "match": {
+        "call": { "name": "messages", "object": "twilio" }
+      },
+      "fix": {
+        "kind": "rename-call",
+        "from": "twilio.messages",
+        "to": "twilio.messages.v1",
+        "explain": "Namespace the client under messages.v1 in the v4 SDK."
+      }
+    },
+    {
+      "type": "endpoint-deprecated",
+      "description": "Programmable Fax (POST /2010-04-01/Accounts/{AccountSid}/Fax.json) is deprecated and will be sunset.",
+      "match": {
+        "endpoint": { "path": "/2010-04-01/Accounts/{AccountSid}/Fax.json", "method": "POST" }
+      },
+      "fix": {
+        "kind": "replace",
+        "explain": "Migrate fax usage to a supported channel (email/SMS via Messages API) before the sunset date."
+      }
+    },
+    {
+      "type": "sdk-upgrade",
+      "description": "Twilio SDK v4 introduced the new client structure; v3 clients are unsupported.",
+      "match": {
+        "sdk": { "package": "twilio", "minVersion": "4.0.0" }
+      },
+      "fix": {
+        "kind": "replace",
+        "explain": "Upgrade twilio to ^4.0.0 and migrate the client initialization."
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1.0",
+  "id": "stripe-2025-05-amount-decimal",
+  "vendor": "stripe",
+  "title": "Amount fields migrated from integer cents to decimal dollars",
+  "severity": "breaking",
+  "lang": "typescript",
+  "changedAt": "2025-05-15",
+  "references": [
+    "https://stripe.com/docs/changelog/2025-05-15-amount-decimal"
+  ],
+  "changes": [
+    {
+      "type": "changed-parameter-type",
+      "description": "The `amount` parameter on charge creation now expects a decimal dollar amount (e.g. 10.50) instead of integer cents (1050).",
+      "match": {
+        "call": { "name": "charges.create", "object": "stripe" },
+        "parameter": { "name": "amount" }
+      },
+      "fix": {
+        "kind": "convert-amount",
+        "from": "amount",
+        "to": "amount",
+        "explain": "Divide the amount by 100 to convert cents to dollars."
+      }
+    },
+    {
+      "type": "removed-field",
+      "description": "The `amount` property on Charge objects is now a decimal string rather than an integer.",
+      "match": {
+        "field": { "name": "amount", "object": "charge" }
+      },
+      "fix": {
+        "kind": "convert-amount",
+        "explain": "Charge.amount is now a decimal string; convert before arithmetic."
+      }
+    }
+  ]
+}

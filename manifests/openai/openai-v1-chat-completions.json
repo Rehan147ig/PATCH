@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "1.0",
+  "id": "openai-v1-chat-completions",
+  "vendor": "openai",
+  "title": "OpenAI v1 SDK: Completions → Chat Completions migration",
+  "severity": "deprecation",
+  "lang": "typescript",
+  "changedAt": "2024-01-01",
+  "references": [
+    "https://platform.openai.com/docs/guides/text-generation/migrating-to-chat-completions"
+  ],
+  "changes": [
+    {
+      "type": "deprecated-call",
+      "description": "`openai.completions.create` is deprecated; migrate to `openai.chat.completions.create` with the chat message format.",
+      "match": {
+        "call": { "name": "completions.create", "object": "openai" }
+      },
+      "fix": {
+        "kind": "rename-call",
+        "from": "openai.completions",
+        "to": "openai.chat.completions",
+        "explain": "Replace completions.create with chat.completions.create and restructure the prompt into messages: [{role:'user', content: prompt}]."
+      }
+    },
+    {
+      "type": "renamed-parameter",
+      "description": "The `prompt` parameter on completions is replaced by the `messages` array on chat.completions.",
+      "match": {
+        "call": { "name": "create", "object": "openai.chat.completions" },
+        "parameter": { "name": "prompt" }
+      },
+      "fix": {
+        "kind": "rename-parameter",
+        "from": "prompt",
+        "to": "messages",
+        "explain": "Wrap the prompt text in [{ role: 'user', content: prompt }]."
+      }
+    },
+    {
+      "type": "sdk-upgrade",
+      "description": "OpenAI SDK v4+ is required for chat.completions; v3 is no longer supported.",
+      "match": {
+        "sdk": { "package": "openai", "minVersion": "4.0.0" }
+      },
+      "fix": {
+        "kind": "replace",
+        "explain": "Upgrade the openai package to ^4.0.0 and update import/initialization to `new OpenAI({ apiKey })`."
+      }
+    }
+  ]
+}

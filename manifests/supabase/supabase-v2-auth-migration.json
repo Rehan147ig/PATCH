@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "1.0",
+  "id": "supabase-v2-auth-migration",
+  "vendor": "supabase",
+  "title": "Supabase JS v2: Auth API breaking changes",
+  "severity": "breaking",
+  "lang": "typescript",
+  "changedAt": "2025-02-15",
+  "references": [
+    "https://supabase.com/docs/reference/javascript/v1/upgrade-guide"
+  ],
+  "changes": [
+    {
+      "type": "renamed-call",
+      "description": "`supabase.auth.signUp` with email+password now requires the `options` object and returns `data.session` instead of `session`.",
+      "match": {
+        "call": { "name": "auth.signUp", "object": "supabase" }
+      },
+      "fix": {
+        "kind": "rename-call",
+        "from": "supabase.auth.signUp",
+        "to": "supabase.auth.signUp",
+        "explain": "Wrap password in options and read the session from data.session."
+      }
+    },
+    {
+      "type": "removed-parameter",
+      "description": "The `refreshToken` parameter on `supabase.auth.api.refreshAccessToken` was removed; use `supabase.auth.refreshSession` instead.",
+      "match": {
+        "call": { "name": "refreshAccessToken", "object": "supabase.auth.api" },
+        "parameter": { "name": "refreshToken" }
+      },
+      "fix": {
+        "kind": "rename-call",
+        "from": "supabase.auth.api.refreshAccessToken",
+        "to": "supabase.auth.refreshSession",
+        "explain": "Replace refreshAccessToken({refreshToken}) with refreshSession({refresh_token})."
+      }
+    },
+    {
+      "type": "sdk-upgrade",
+      "description": "Supabase JS v2 requires @supabase/supabase-js ^2.0.",
+      "match": {
+        "sdk": { "package": "@supabase/supabase-js", "minVersion": "2.0.0" }
+      },
+      "fix": {
+        "kind": "replace",
+        "explain": "Upgrade @supabase/supabase-js to ^2.0.0."
+      }
+    }
+  ]
+}

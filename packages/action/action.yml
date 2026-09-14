@@ -1,0 +1,30 @@
+name: 'apimigrate'
+description: 'Scan your codebase against API change manifests and open a migration PR'
+author: 'apimigrate'
+inputs:
+  manifests:
+    description: 'Directory containing API migration manifest JSON files'
+    required: false
+    default: 'manifests'
+  token:
+    description: 'GitHub token with pull_request write permission'
+    required: false
+    default: '${{ github.token }}'
+  base:
+    description: 'Base branch for the migration PR'
+    required: false
+    default: ''
+  branch:
+    description: 'Branch name for the migration PR'
+    required: false
+    default: 'apimigrate/auto-migration'
+  fail-on-hits:
+    description: 'Fail the check if affected usages are found (useful for pre-merge gating)'
+    required: false
+    default: false
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+branding:
+  icon: 'refresh-cw'
+  color: 'purple'

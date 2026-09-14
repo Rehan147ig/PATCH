@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>apimigrate Enterprise — API Change Radar</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">▲</div>
+        <div class="brand-text">
+          <strong>apimigrate</strong>
+          <span>Enterprise</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="#overview" class="nav-link active" data-view="overview">Overview</a>
+        <a href="#scan" class="nav-link" data-view="scan">Live Scan</a>
+        <a href="#catalog" class="nav-link" data-view="catalog">Manifest Catalog</a>
+        <a href="#telemetry" class="nav-link" data-view="telemetry">Telemetry Radar</a>
+        <a href="#security" class="nav-link" data-view="security">Security</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="status-dot"></div>
+        <span id="conn-status">Connected</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- Overview -->
+      <section id="overview" class="view active">
+        <header class="view-header">
+          <h1>Executive Overview</h1>
+          <p>API change intelligence across your fleet</p>
+        </header>
+        <div class="stat-grid">
+          <div class="stat-card">
+            <span class="stat-label">Vendors Tracked</span>
+            <span class="stat-value" id="stat-vendors">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Active Contract Drifts</span>
+            <span class="stat-value" id="stat-drifts">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Auto-Remediated PRs</span>
+            <span class="stat-value" id="stat-remediated">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Affected Files</span>
+            <span class="stat-value" id="stat-files">—</span>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Risk Spectrum</h2>
+          <div class="risk-bars">
+            <div class="risk-row">
+              <span class="risk-label">LOW</span>
+              <div class="risk-track"><div class="risk-fill low" id="risk-low"></div></div>
+              <span class="risk-count" id="count-low">0</span>
+            </div>
+            <div class="risk-row">
+              <span class="risk-label">MEDIUM</span>
+              <div class="risk-track"><div class="risk-fill medium" id="risk-medium"></div></div>
+              <span class="risk-count" id="count-medium">0</span>
+            </div>
+            <div class="risk-row">
+              <span class="risk-label">HIGH</span>
+              <div class="risk-track"><div class="risk-fill high" id="risk-high"></div></div>
+              <span class="risk-count" id="count-high">0</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Active Drift Reports</h2>
+          <div class="table-wrap">
+            <table id="drift-table">
+              <thead>
+                <tr><th>Vendor</th><th>Manifest</th><th>Severity</th><th>Hits</th></tr>
+              </thead>
+              <tbody id="drift-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Live Scan -->
+      <section id="scan" class="view">
+        <header class="view-header">
+          <h1>Live Scan &amp; Diff Sandbox</h1>
+          <p>Trigger a scan, inspect hits, preview the diff</p>
+        </header>
+        <div class="panel scan-controls">
+          <input type="text" id="repo-dir" placeholder="Repo directory (e.g. /path/to/repo)" />
+          <input type="text" id="services" placeholder="Services (comma-separated, optional)" />
+          <button id="scan-btn" class="btn primary">Run Scan</button>
+        </div>
+        <div class="panel">
+          <h2>Scan Results</h2>
+          <div id="scan-results" class="scan-results">
+            <p class="muted">No scan run yet.</p>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Diff Preview</h2>
+          <div id="diff-view" class="diff-view">
+            <p class="muted">Select a hit to preview its migration.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Catalog -->
+      <section id="catalog" class="view">
+        <header class="view-header">
+          <h1>Vendor Manifest Catalog</h1>
+          <p>Verified, schema-valid migration manifests</p>
+        </header>
+        <div id="catalog-grid" class="catalog-grid"></div>
+      </section>
+
+      <!-- Telemetry -->
+      <section id="telemetry" class="view">
+        <header class="view-header">
+          <h1>Telemetry &amp; Contract Drift</h1>
+          <p>Sunset headers, deprecation signals, approaching deadlines</p>
+        </header>
+        <div class="panel">
+          <h2>Approaching Sunsets</h2>
+          <div id="sunset-list" class="sunset-list">
+            <p class="muted">No approaching sunsets.</p>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Deprecation / Sunset Header Rules</h2>
+          <div id="telemetry-rules" class="telemetry-rules"></div>
+        </div>
+      </section>
+
+      <!-- Security -->
+      <section id="security" class="view">
+        <header class="view-header">
+          <h1>Security &amp; Integrations</h1>
+          <p>Zero-trust posture, repo bindings, audit</p>
+        </header>
+        <div class="panel">
+          <h2>Access Model</h2>
+          <ul class="security-list">
+            <li><strong>Least privilege:</strong> installation tokens scoped to the repos the app is installed on.</li>
+            <li><strong>Signed webhooks:</strong> HMAC SHA-256 verification on every GitHub event.</li>
+            <li><strong>Sandboxed codemods:</strong> mechanical renames only; AI codemods require an explicit provider + output validation.</li>
+            <li><strong>Verify-before-PR:</strong> builds must pass (tsc) before any migration PR is opened.</li>
+            <li><strong>Audit trail:</strong> every scan and PR is recorded in the activity feed.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h2>Repository Bindings</h2>
+          <p class="muted" id="binding-summary">No repos bound yet — install the GitHub App or configure APIMIGRATE_REPO_DIR.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
