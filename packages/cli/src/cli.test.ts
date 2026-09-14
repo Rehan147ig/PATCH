@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { scanDirectory, planCodemods } from '@apimigrate/core';
 
 describe('cli integration', () => {
@@ -60,4 +61,66 @@ await stripe.charges.create({ amount: 1000 });
     const content = plan.changedFiles.get('a.ts');
     expect(content).toContain('stripe.products.list()');
   });
+
+  it('--dry-run plus --write is an explicit argument error with no writes', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'apimigrate-cli-flags-'));
+    const before = `const s = stripe.skus.list();\n`;
+    writeFileSync(path.join(dir, 'a.ts'), before);
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'flag-test' }));
+    const mdir = mkdtempSync(path.join(tmpdir(), 'apimigrate-manifests-'));
+    writeFileSync(
+      path.join(mdir, 'm.json'),
+      JSON.stringify({
+        schemaVersion: '1.0',
+        id: 'flag-test',
+        vendor: 'stripe',
+        title: 't',
+        severity: 'deprecation',
+        lang: 'typescript',
+        changedAt: '2026-01-01',
+        changes: [
+          {
+            type: 'deprecated-call',
+            description: 'd',
+            match: { call: { name: 'skus', object: 'stripe' } },
+            fix: { kind: 'rename-call', from: 'stripe.skus', to: 'stripe.products' },
+          },
+        ],
+      }),
+    );
+    const cli = path.resolve(import.meta.dirname ?? '.', '../../cli/dist/cli.js');
+    const candidates = [
+      path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'dist', 'cli.js'),
+      'D:\\apimigrate\\packages\\cli\\dist\\cli.js',
+    ];
+    const cliPath = candidates.find((c) => {
+      try {
+        return existsSync(c);
+      } catch {
+        return false;
+      }
+    });
+    expect(cliPath, 'built CLI dist exists').toBeTruthy();
+    const result = await new Promise<{ code: number; out: string; err: string }>((resolve) => {
+      execFile(
+        process.execPath,
+        [cliPath!, 'apply', dir, '--manifests', mdir, '--dry-run', '--write'],
+        { timeout: 30000 },
+        (err, stdout, stderr) => {
+          resolve({
+            code: (err as { code?: number } | null)?.code ?? 0,
+            out: String(stdout ?? ''),
+            err: String(stderr ?? ''),
+          });
+        },
+      );
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.out + result.err).toMatch(/mutually exclusive/i);
+    // No writes: source untouched, no evidence dir.
+    expect(readFileSync(path.join(dir, 'a.ts'), 'utf8')).toBe(before);
+    expect(existsSync(path.join(dir, '.apimigrate'))).toBe(false);
+    void cli;
+    void mkdirSync;
+  }, 60000);
 });

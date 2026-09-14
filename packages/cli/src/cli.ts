@@ -8,7 +8,8 @@ import {
   scanDirectory,
   planCodemods,
   writeCodemods,
-  verifyBuild,
+  verifyCandidate,
+  computeCandidateDigest,
   type MigrationManifest,
   type ScanReport,
 } from '@apimigrate/core';
@@ -51,7 +52,15 @@ program
   .option('--base <branch>', 'base branch for the PR', 'main')
   .option('--branch <name>', 'branch name for the PR', 'apimigrate/auto-migration')
   .option('--dry-run', 'plan changes without writing or pushing')
-  .action(async (dir: string, opts: { manifests: string; pr?: boolean; base?: string; branch?: string; dryRun?: boolean }) => {
+  .option('--write', 'write changes to disk (default behavior; conflicts with --dry-run)')
+  .option('--allow-incomplete', 'open a PR even when verification is INCOMPLETE (explicit unverified draft)')
+  .action(async (dir: string, opts: { manifests: string; pr?: boolean; base?: string; branch?: string; dryRun?: boolean; write?: boolean; allowIncomplete?: boolean }) => {
+    // PRD §15: --dry-run plus --write is an explicit argument error: no writes, nonzero exit.
+    if (opts.dryRun && opts.write) {
+      console.error('error: --dry-run and --write are mutually exclusive (no changes written)');
+      process.exitCode = 2;
+      return;
+    }
     const root = path.resolve(dir);
     const manifestDir = path.resolve(opts.manifests);
     const manifests = await loadManifests(manifestDir);
@@ -65,6 +74,8 @@ program
 
     if (opts.dryRun) {
       for (const [file] of plan.changedFiles) console.log(`  would change: ${file}`);
+      const { digest } = await computeCandidateDigest(plan.changedFiles, reports);
+      console.log(`candidate: ${digest.slice(0, 12)} (dry-run, not verified)`);
       return;
     }
 
@@ -75,22 +86,47 @@ program
     }
     console.log(`Wrote ${written.length} file(s)`);
 
-    const failing = await verifyBuild(root);
-    if (failing.length > 0) {
-      console.error(`Build verification failed in ${failing.length} file(s):`);
-      for (const f of failing) console.error(`  - ${f}`);
-      console.error('PR not opened; inspect the diff before committing.');
+    // FR-08/FR-10: real verification with persisted evidence bound to the
+    // candidate digest. Install-only success or missing tests is never VERIFIED.
+    const run = await verifyCandidate(root, plan.changedFiles, reports);
+    for (const d of run.dimensions) {
+      console.log(`  ${d.name}: ${d.status} — ${d.reason}`);
+    }
+    console.log(`candidate: ${run.candidateDigest.slice(0, 12)} verdict: ${run.verdict}`);
+    await persistValidation(root, run);
+
+    if (run.verdict === 'FAILED') {
+      console.error('Verification FAILED; PR not opened. Inspect the diff and validation evidence.');
       process.exitCode = 1;
       return;
     }
-    console.log('Build verification passed');
+    if (run.verdict === 'INCOMPLETE' && !opts.allowIncomplete) {
+      console.error(
+        'Verification INCOMPLETE (missing behavioral evaluation); PR not opened. ' +
+          'Re-run with --allow-incomplete to explicitly open an unverified draft.',
+      );
+      process.exitCode = 1;
+      return;
+    }
 
     if (opts.pr) {
-      await openPr(root, opts.base!, opts.branch!, reports);
+      await openPr(root, opts.base!, opts.branch!, reports, run.candidateDigest);
     }
   });
 
-async function openPr(root: string, base: string, branch: string, reports: ScanReport[]) {
+async function persistValidation(root: string, run: { candidateDigest: string }): Promise<void> {
+  try {
+    const dir = path.join(root, '.apimigrate');
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `validation-${run.candidateDigest.slice(0, 12)}.json`);
+    await fs.writeFile(file, JSON.stringify(run, null, 2), 'utf8');
+    console.log(`evidence: ${path.relative(root, file)}`);
+  } catch (err) {
+    console.error(`warning: could not persist validation evidence: ${(err as Error).message}`);
+  }
+}
+
+async function openPr(root: string, base: string, branch: string, reports: ScanReport[], candidateDigest?: string) {
   // Delegate to GitHub CLI (gh) which handles auth. In production, the
   // GitHub App backend does this via the API.
   const { execSync } = await import('node:child_process');
@@ -99,7 +135,7 @@ async function openPr(root: string, base: string, branch: string, reports: ScanR
     execSync(`git add -A`, { cwd: root, stdio: 'pipe' });
     execSync(`git commit -m "chore(apimigrate): apply API migration"`, { cwd: root, stdio: 'pipe' });
     execSync(`git push -u origin ${branch}`, { cwd: root, stdio: 'pipe' });
-    const body = buildPrBody(reports);
+    const body = buildPrBody(reports, candidateDigest);
     execSync(`gh pr create --base ${base} --head ${branch} --title "chore(apimigrate): apply API migration" --body "${body.replace(/"/g, '\\"')}"`, {
       cwd: root,
       stdio: 'pipe',
@@ -111,7 +147,7 @@ async function openPr(root: string, base: string, branch: string, reports: ScanR
   }
 }
 
-function buildPrBody(reports: ScanReport[]): string {
+function buildPrBody(reports: ScanReport[], candidateDigest?: string): string {
   const lines: string[] = [
     '## Auto-generated API migration',
     '',
@@ -144,6 +180,10 @@ function buildPrBody(reports: ScanReport[]): string {
   }
   lines.push('---');
   lines.push('Review before merging. If something looks wrong, close this PR.');
+  if (candidateDigest) {
+    lines.push('');
+    lines.push(`candidate: \`${candidateDigest.slice(0, 12)}\``);
+  }
   return lines.join('\n');
 }
 

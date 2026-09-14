@@ -153,3 +153,50 @@ export interface TelemetryRule {
   /** Human description of what the header signals. */
   description: string;
 }
+
+/**
+ * FR-08/FR-10: validation dimensions. Each dimension is reported separately —
+ * no single green indicator hides missing dimensions.
+ */
+export type ValidationStatus = 'PASS' | 'FAIL' | 'NOT_RUN' | 'NOT_APPLICABLE' | 'INCONCLUSIVE';
+
+export type ValidationDimensionName =
+  | 'dependency-resolution'
+  | 'types-build'
+  | 'unit-tests';
+
+export interface ValidationDimension {
+  name: ValidationDimensionName;
+  status: ValidationStatus;
+  reason: string;
+  command?: string;
+  exitCode?: number;
+  durationMs?: number;
+  /** Bounded, redacted log excerpt (never raw secrets). */
+  logExcerpt?: string;
+  testCounts?: { passed?: number; failed?: number; total?: number };
+}
+
+/** Overall candidate verdict. Only VERIFIED may open a migration PR. */
+export type ValidationVerdict = 'VERIFIED' | 'FAILED' | 'INCOMPLETE';
+
+export interface ValidationProfile {
+  id: string;
+  required: ValidationDimensionName[];
+}
+
+export interface ValidationRun {
+  /** Immutable binding: every field that changes the candidate changes this. */
+  candidateDigest: string;
+  baseSha: string | null;
+  profileId: string;
+  verdict: ValidationVerdict;
+  dimensions: ValidationDimension[];
+  startedAt: string;
+  finishedAt: string;
+  toolVersions: Record<string, string | null>;
+  /** Number of files in the candidate. */
+  fileCount: number;
+  /** Short digests per file for audit (path -> sha256[0:12]). */
+  fileDigests: Record<string, string>;
+}
