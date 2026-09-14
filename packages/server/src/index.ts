@@ -12,9 +12,14 @@ import {
   computeCandidateDigest,
   branchNameForDigest,
   gateDelivery,
+  TenantStore,
+  OutcomeTracker,
+  UsageLedger,
+  ArtifactRegistry,
   type ScanReport,
   type MigrationManifest,
 } from '@apimigrate/core';
+import { registerControlPlane } from './api.js';
 
 /**
  * The apimigrate GitHub App server.
@@ -43,6 +48,16 @@ export function createServer(config: GitHubAppConfig, manifestsDir: string, opts
   // In-memory state for the dashboard.
   let latestReports: ScanReport[] = [];
   let lastScanAt: string | null = null;
+
+  // Proposed control-plane API surface (PRD §10). Backed by tenant-scoped
+  // stores; internal dashboard routes below remain behind adapters.
+  registerControlPlane(app, {
+    tenants: new TenantStore(),
+    outcomes: new OutcomeTracker(),
+    usage: new UsageLedger(),
+    artifacts: new ArtifactRegistry(),
+    manifestsDir,
+  });
 
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true });

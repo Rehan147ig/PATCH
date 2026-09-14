@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0",
+  "id": "gemini-generate-content-lifecycle",
+  "vendor": "gemini",
+  "title": "Gemini generateContent lifecycle (monitored; repair not yet qualified)",
+  "severity": "deprecation",
+  "lang": "typescript",
+  "changedAt": "2026-03-01",
+  "references": [
+    "https://ai.google.dev/api/generate-content"
+  ],
+  "changes": [
+    {
+      "type": "deprecated-call",
+      "description": "Legacy Gemini model/prompt calling conventions are changing; automated repair is not yet qualified, report only.",
+      "match": {
+        "call": { "name": "generateContent", "object": "gemini" }
+      }
+    }
+  ]
+}

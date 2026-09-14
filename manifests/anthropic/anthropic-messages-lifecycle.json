@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0",
+  "id": "anthropic-messages-lifecycle",
+  "vendor": "anthropic",
+  "title": "Anthropic Messages lifecycle (monitored; repair not yet qualified)",
+  "severity": "deprecation",
+  "lang": "typescript",
+  "changedAt": "2026-03-01",
+  "references": [
+    "https://docs.anthropic.com/en/api/messages"
+  ],
+  "changes": [
+    {
+      "type": "deprecated-call",
+      "description": "Legacy Anthropic completions usage is deprecated in favor of Messages; automated repair is not yet qualified, report only.",
+      "match": {
+        "call": { "name": "completions.create", "object": "anthropic" }
+      }
+    }
+  ]
+}
