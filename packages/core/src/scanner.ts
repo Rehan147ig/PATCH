@@ -48,8 +48,11 @@ const IDENT_CHAR = /[A-Za-z0-9_$]/;
  * Tokenize JavaScript/TypeScript/JSON source.
  * Strips comments and string contents (keeps the quote positions but not the
  * inner text), so we can match identifiers reliably without parsing strings.
+ *
+ * Exported for FR-07 verification: the codemod re-tokenizes the current file
+ * content and rejects edits whose offsets fall inside comments/strings.
  */
-function tokenize(source: string): Token[] {
+export function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   let line = 1;
@@ -153,6 +156,13 @@ interface Candidate {
   column: number;
   start: number;
   end: number;
+  /**
+   * FR-07: for `call` candidates, absolute char offsets of the argument list
+   * contents (between the parens). Used to scope compound call+parameter
+   * matches to a single call site instead of file-level co-occurrence.
+   */
+  argsStart?: number;
+  argsEnd?: number;
 }
 
 /**
@@ -221,27 +231,52 @@ function extractCandidates(tokens: Token[]): Candidate[] {
     if (parts.length > 1 || isCall) {
       // Compute the enclosing statement line range (to the next ';' or matching close).
       let lineEnd = t.line;
-      for (let k = j + 1; k < tokens.length && tokens[k].line <= lineEnd + 6; k++) {
-        if (tokens[k].text === ';' || tokens[k].text === '}') {
-          lineEnd = tokens[k].line;
-          break;
-        }
-        if (tokens[k].text === '(') {
-          // find matching close paren across lines
+      let argsStart: number | undefined;
+      let argsEnd: number | undefined;
+      if (isCall) {
+        // FR-07: resolve the exact argument-list range so compound
+        // call+parameter matches can be scoped to one call site.
+        const openIdx = j + 1;
+        const openTok = tokens[openIdx];
+        if (openTok && openTok.text === '(') {
           let depth = 0;
-          for (let m = k; m < tokens.length; m++) {
+          for (let m = openIdx; m < tokens.length; m++) {
             if (tokens[m].text === '(') depth++;
             else if (tokens[m].text === ')') {
               depth--;
               if (depth === 0) {
                 lineEnd = tokens[m].line;
+                argsStart = openTok.start + 1;
+                argsEnd = tokens[m].start;
                 break;
               }
             }
           }
-          break;
         }
-        lineEnd = Math.max(lineEnd, tokens[k].line);
+      }
+      if (argsStart === undefined) {
+        for (let k = j + 1; k < tokens.length && tokens[k].line <= lineEnd + 6; k++) {
+          if (tokens[k].text === ';' || tokens[k].text === '}') {
+            lineEnd = tokens[k].line;
+            break;
+          }
+          if (tokens[k].text === '(') {
+            // find matching close paren across lines
+            let depth = 0;
+            for (let m = k; m < tokens.length; m++) {
+              if (tokens[m].text === '(') depth++;
+              else if (tokens[m].text === ')') {
+                depth--;
+                if (depth === 0) {
+                  lineEnd = tokens[m].line;
+                  break;
+                }
+              }
+            }
+            break;
+          }
+          lineEnd = Math.max(lineEnd, tokens[k].line);
+        }
       }
       out.push({
         kind: isCall ? 'call' : 'field',
@@ -251,6 +286,7 @@ function extractCandidates(tokens: Token[]): Candidate[] {
         start: t.start,
         end: tokens[j].start + tokens[j].text.length,
         lineEnd,
+        ...(argsStart !== undefined && argsEnd !== undefined ? { argsStart, argsEnd } : {}),
       });
     }
 
@@ -315,6 +351,22 @@ function extractCandidates(tokens: Token[]): Candidate[] {
     }
   }
   return out;
+}
+
+/**
+ * FR-07: verify an absolute char offset points at real code (an identifier
+ * token), not inside a comment or string literal. The codemod calls this on
+ * the current file content before applying any edit; a `false` result means
+ * the hit must be rejected as unfixed (e.g. snippet text found in a comment).
+ */
+export function isOffsetInCode(source: string, offset: number): boolean {
+  if (offset < 0 || offset >= source.length) return false;
+  const tokens = tokenize(source);
+  for (const t of tokens) {
+    if (t.kind !== 'identifier') continue;
+    if (offset >= t.start && offset < t.start + t.text.length) return true;
+  }
+  return false;
 }
 
 /** Simple semver compare. */
@@ -384,18 +436,57 @@ function matchesPatternKind(m: ManifestMatch, c: Candidate): boolean {
  * Check whether a manifest's match patterns are satisfied by the candidate set
  * of a single file. Returns every candidate that satisfies the (possibly
  * compound) match. If the match has exactly one pattern kind, every matching
- * candidate is returned. If it has multiple kinds (e.g. call + parameter),
- * all must appear among the candidates — the call/field candidates are the
- * "primary" matches that get reported.
+ * candidate is returned.
+ *
+ * FR-07: compound call+parameter matches are source-scoped — the parameter
+ * must occur inside that specific call's argument list (by char offset), not
+ * merely elsewhere in the same file. This rejects file-level co-occurrence
+ * false positives (e.g. an unrelated `{ sku }` object far from the call).
+ * Changes in comments/strings never produce candidates (the tokenizer emits
+ * them as single comment/string tokens, never identifiers), so they are
+ * rejected here by construction.
  */
-function matchesCompound(m: ManifestMatch, candidates: Candidate[]): Candidate[] {
+function matchesCompound(
+  m: ManifestMatch,
+  candidates: Candidate[],
+  change?: ManifestChange,
+): Candidate[] {
   const kinds: Array<'call' | 'field' | 'parameter' | 'sdk'> = [];
   if (m.call) kinds.push('call');
   if (m.field || m.telemetry || m.endpoint) kinds.push('field');
   if (m.parameter) kinds.push('parameter');
   if (m.sdk) kinds.push('sdk');
 
-  // Compound: every kind must have at least one matching candidate.
+  if (kinds.length <= 1) {
+    return candidates.filter((c) => matchesPatternKind(m, c));
+  }
+
+  // FR-07 source-scoped compound: call + parameter must share one call site.
+  if (m.call && m.parameter && !m.field && !m.sdk) {
+    const calls = candidates.filter((c) => c.kind === 'call' && matchesPatternKind(m, c));
+    const params = candidates.filter((c) => c.kind === 'parameter' && matchesPatternKind(m, c));
+    if (calls.length === 0 || params.length === 0) return [];
+    const fixKind = change?.fix?.kind;
+    const parameterScoped = fixKind === 'rename-parameter' || fixKind === 'remove-parameter';
+    const out: Candidate[] = [];
+    for (const call of calls) {
+      const inside =
+        call.argsStart !== undefined && call.argsEnd !== undefined
+          ? params.filter((p) => p.start >= call.argsStart! && p.end <= call.argsEnd!)
+          : params.filter((p) => p.line >= call.line && call.lineEnd !== undefined && p.line <= call.lineEnd);
+      if (inside.length === 0) continue;
+      if (parameterScoped) {
+        // Focused edit target is the parameter symbol(s) within this call.
+        out.push(...inside);
+      } else {
+        out.push(call);
+      }
+    }
+    return out;
+  }
+
+  // Other compounds (e.g. sdk+call, field+parameter): every kind must appear.
+  // Kept file-level by necessity, but still require all kinds.
   for (const kind of kinds) {
     if (!candidates.some((c) => c.kind === kind && matchesPatternKind(m, c))) {
       return [];
@@ -416,11 +507,22 @@ function matchesCompound(m: ManifestMatch, candidates: Candidate[]): Candidate[]
 
 /**
  * Compute the replacement text for a fix, if it is mechanical.
- * Returns undefined for report-only fixes (convert-amount, replace) that
- * require human judgment or context beyond a simple rename.
+ * Returns undefined for report-only fixes (convert-amount, replace,
+ * remove-parameter) that require human judgment or context beyond a simple
+ * rename. FR-07: the replacement is bound to the exact matched symbol —
+ * a rename-call fix only applies to call candidates, rename-field to field
+ * candidates, rename-parameter to parameter candidates. Cross-kind
+ * application (e.g. a call fix applied to a bare parameter name) is
+ * rejected by returning undefined.
  */
-function computeReplacement(fix: ManifestFix, match: Candidate): string | undefined {
+function computeReplacement(
+  fix: ManifestFix,
+  match: Candidate,
+): string | undefined {
   if (!fix || !fix.from || !fix.to) return undefined;
+  if (fix.kind === 'rename-call' && match.kind !== 'call') return undefined;
+  if (fix.kind === 'rename-field' && match.kind !== 'field') return undefined;
+  if (fix.kind === 'rename-parameter' && match.kind !== 'parameter') return undefined;
   if (fix.kind === 'rename-call' || fix.kind === 'rename-field' || fix.kind === 'rename-parameter') {
     // Replace the matched prefix within the full name.
     // E.g. from 'stripe.skus' to 'stripe.products' applied to 'stripe.skus.list' -> 'stripe.products.list'.
@@ -434,11 +536,17 @@ function computeReplacement(fix: ManifestFix, match: Candidate): string | undefi
   return undefined;
 }
 
-function applyFix(fix: ManifestFix, match: Candidate, change: ManifestChange): ScanHit {
+function applyFix(
+  fix: ManifestFix,
+  match: Candidate,
+  change: ManifestChange,
+  manifestId: string,
+  changeIndex: number,
+): ScanHit {
   const replacement = computeReplacement(fix, match);
   return {
-    manifestId: change.description.slice(0, 80),
-    changeIndex: 0,
+    manifestId,
+    changeIndex,
     kind: change.type,
     file: '',
     line: match.line,
@@ -447,6 +555,8 @@ function applyFix(fix: ManifestFix, match: Candidate, change: ManifestChange): S
     confidence: 0.95,
     fix,
     replacement,
+    offset: match.start,
+    endOffset: match.end,
   };
 }
 
@@ -508,9 +618,9 @@ export async function scanDirectory(
         for (let ci = 0; ci < manifest.changes.length; ci++) {
           const change = manifest.changes[ci];
           if (!change.match) continue;
-          const matched = matchesCompound(change.match, candidates);
+          const matched = matchesCompound(change.match, candidates, change);
           for (const cand of matched) {
-            const hit = change.fix ? applyFix(change.fix, cand, change) : null;
+            const hit = change.fix ? applyFix(change.fix, cand, change, manifest.id, ci) : null;
             if (hit) {
               hit.file = file;
               hits.push(hit);
@@ -525,6 +635,8 @@ export async function scanDirectory(
                 column: cand.column,
                 snippet: cand.name,
                 confidence: 0.95,
+                offset: cand.start,
+                endOffset: cand.end,
               });
             }
             if (cand.lineEnd && cand.lineEnd > cand.line) {

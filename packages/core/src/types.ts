@@ -94,6 +94,15 @@ export interface ScanHit {
   replacement?: string;
   /** Line range covered by the hit (multi-line matches). */
   lineRange?: { start: number; end: number };
+  /**
+   * FR-07: absolute 0-based char offsets into the original file, for
+   * source-scoped edits. Present when the scanner could resolve an exact
+   * symbol location. The codemod must verify `content.slice(offset,
+   * endOffset) === snippet` before editing; hits without offsets are
+   * report-only and must never be applied via text search.
+   */
+  offset?: number;
+  endOffset?: number;
   /** Per-change risk rating (from manifest or risk engine). */
   risk?: RiskRating;
   /** Estimated blast radius metadata. */
