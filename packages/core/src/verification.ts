@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import type {
   ScanReport,
@@ -105,12 +106,31 @@ interface CmdResult {
   durationMs: number;
 }
 
+/**
+ * Resolve the TypeScript compiler without depending on PATH shims.
+ * `npx tsc` fails on machines without a global install (npx then fetches an
+ * unrelated package named `tsc`); running the workspace's own tsc.js with
+ * the current node works everywhere this package's dependencies are
+ * installed. Falls back to `npx tsc` when resolution fails.
+ */
+function tscRunner(): { cmd: string; prefix: string[]; label: string } {
+  try {
+    const tscJs = createRequire(import.meta.url).resolve("typescript/lib/tsc.js");
+    return { cmd: process.execPath, prefix: [tscJs], label: "node <workspace>/typescript/lib/tsc.js" };
+  } catch {
+    return { cmd: "npx", prefix: ["tsc"], label: "npx tsc" };
+  }
+}
+
 function runCmd(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<CmdResult> {
   const started = Date.now();
   return new Promise((resolve) => {
-    // Windows: npm/npx are .cmd/.ps1 shims; run through the shell so they
-    // resolve. On posix the shell flag is harmless for simple args.
-    const shell = process.platform === 'win32';
+    // Windows: bare `npm`/`npx` are .cmd/.ps1 shims that only resolve through
+    // a shell — but a shell breaks executable paths containing spaces
+    // (e.g. `C:\Program Files\nodejs\node.exe`), so use it only for
+    // PATH-resolved bare command names.
+    const shell =
+      process.platform === "win32" && !cmd.includes("/") && !cmd.includes("\\") && !cmd.includes(":");
     execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, shell }, (err, stdout, stderr) => {
       const durationMs = Date.now() - started;
       if (err && (err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -265,10 +285,13 @@ export async function verifyCandidate(
         tsconfigExists = false;
       }
       const tsFiles = [...changedFiles.keys()].filter((f) => /\.m?[tj]sx?$/.test(f));
-      const tscArgs = tsconfigExists ? ['tsc', '--noEmit'] : ['tsc', '--noEmit', '--skipLibCheck', ...tsFiles];
-      const r = await runCmd('npx', tscArgs, rootDir, timeoutMs);
-      const log = redactLog(`$ npx ${tscArgs.join(' ')}\n${r.stdout}\n${r.stderr}`);
-      const cmdStr = `npx ${tscArgs.join(' ')}`;
+      const tsc = tscRunner();
+      const tscArgs = tsconfigExists
+        ? [...tsc.prefix, "--noEmit"]
+        : [...tsc.prefix, "--noEmit", "--skipLibCheck", ...tsFiles];
+      const r = await runCmd(tsc.cmd, tscArgs, rootDir, timeoutMs);
+      const log = redactLog(`$ ${tsc.label} ${tscArgs.slice(tsc.prefix.length).join(" ")}\n${r.stdout}\n${r.stderr}`);
+      const cmdStr = `$ ${tsc.label} ${tscArgs.slice(tsc.prefix.length).join(" ")}`;
       if (r.exitCode === 0) {
         dimensions.push({
           name: "types-build",
@@ -368,10 +391,11 @@ export async function verifyCandidate(
     verdict = "INCOMPLETE";
   }
 
+  const tsc = tscRunner();
   const [nodeV, npmV, tscV] = await Promise.all([
     toolVersion("node", ["--version"], rootDir),
     toolVersion("npm", ["--version"], rootDir),
-    toolVersion("npx", ["tsc", "--version"], rootDir),
+    toolVersion(tsc.cmd, [...tsc.prefix, "--version"], rootDir),
   ]);
 
   void started;
